@@ -4,6 +4,7 @@ const client  = require('prom-client');
 const { trace } = require('@opentelemetry/api');
 
 const register = new client.Registry();
+register.setContentType(client.openMetricsContentType);
 
 client.collectDefaultMetrics({ register, prefix: 'node_app_' });
 
