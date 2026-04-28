@@ -6,9 +6,8 @@ RUN npm install --omit=dev
 FROM node:18-alpine
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 WORKDIR /app
-COPY --from=builder /app/node_modules ./node_modules
-COPY src/ ./src/
-RUN chown -R appuser:appgroup /app
+COPY --from=builder --chown=appuser:appgroup /app/node_modules ./node_modules
+COPY --chown=appuser:appgroup src/ ./src/
 USER appuser
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
