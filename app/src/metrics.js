@@ -37,14 +37,19 @@ function metricsMiddleware(req, res, next) {
     const durationSec = Number(process.hrtime.bigint() - startNs) / 1e9;
 
     const span    = trace.getActiveSpan();
-    const traceId = span ? span.spanContext().traceId : null;
+    const spanCtx = span ? span.spanContext() : null;
 
     httpRequestsTotal.inc(labels);
-    httpRequestDuration.observe(
-      labels,
-      durationSec,
-      traceId ? { traceId } : undefined
-    );
+
+    if (spanCtx) {
+      httpRequestDuration.observe({
+        labels,
+        value:         durationSec,
+        exemplarLabels: { traceId: spanCtx.traceId, spanId: spanCtx.spanId },
+      });
+    } else {
+      httpRequestDuration.observe(labels, durationSec);
+    }
   });
 
   next();
