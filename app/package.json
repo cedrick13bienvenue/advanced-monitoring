@@ -1,0 +1,29 @@
+{
+  "name": "advanced-observability-node-app",
+  "version": "1.0.0",
+  "description": "Express API with full OTel tracing, Prometheus metrics + exemplars, and structured JSON logs",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev":   "node src/server.js",
+    "test":  "mocha 'tests/**/*-test.js' --exit --timeout 5000"
+  },
+  "dependencies": {
+    "express":    "^4.18.2",
+    "prom-client": "^15.1.0",
+    "@opentelemetry/api":                        "^1.9.0",
+    "@opentelemetry/sdk-node":                   "^0.57.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.57.0",
+    "@opentelemetry/exporter-trace-otlp-http":   "^0.57.0",
+    "@opentelemetry/resources":                  "^1.28.0",
+    "@opentelemetry/semantic-conventions":       "^1.28.0"
+  },
+  "devDependencies": {
+    "chai":      "^4.4.1",
+    "mocha":     "^10.2.0",
+    "supertest": "^6.3.4"
+  },
+  "overrides": {
+    "serialize-javascript": ">=7.0.5"
+  }
+}
