@@ -1,0 +1,106 @@
+networks:
+  monitoring:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+services:
+
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: node-app
+    restart: unless-stopped
+    environment:
+      PORT:                          "3000"
+      APP_VERSION:                   "${APP_VERSION:-1.0.0}"
+      NODE_ENV:                      production
+      OTEL_SERVICE_NAME:             node-app
+      OTEL_EXPORTER_OTLP_ENDPOINT:   "http://jaeger:4318/v1/traces"
+    ports:
+      - "3000:3000"
+    networks:
+      - monitoring
+    depends_on:
+      - jaeger
+    healthcheck:
+      test:         ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval:     30s
+      timeout:      5s
+      retries:      3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - monitoring
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+      - "--enable-feature=exemplar-storage"
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring
+    depends_on:
+      app:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER:         "${GRAFANA_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD:     "${GRAFANA_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP:         "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_FEATURE_TOGGLES_ENABLE:      "traceqlEditor"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    networks:
+      - monitoring
+    depends_on:
+      - prometheus
+      - jaeger
+
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: node-exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    networks:
+      - monitoring
