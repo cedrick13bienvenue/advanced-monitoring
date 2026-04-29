@@ -377,3 +377,128 @@ The dashboard auto-loads with four sections:
 
 ![Grafana dashboard live with error rate and latency panels](screenshots/13-grafana-dashboard-live.png)
 ![Grafana latency section with live percentile data](screenshots/13b-grafana-dashboard-latency-section.png)
+
+---
+
+## Load Testing & Alert Validation
+
+### Running the load test
+
+```bash
+bash load-test.sh
+```
+
+The script runs for 13 minutes (780 seconds) — 3 minutes longer than the `for: 10m` alert window to ensure both alerts have time to fire. Each second it sends:
+
+- `GET /` — normal traffic
+- `GET /api/items` — normal traffic
+- `GET /health` — health check
+- `GET /api/slow` — 300–600ms delay, pushes p95 above 300ms threshold
+- `GET /api/error` × 3 — always returns 500, creates ~30% error rate (6× above the 5% threshold)
+
+![Load test running with countdown](screenshots/11-load-test-running.png)
+
+### Alerts firing
+
+After 10 minutes of sustained load, open `http://localhost:9090/alerts`:
+
+- **HighErrorRate** — FIRING — value: 0.396 (39.6% error rate)
+- **HighLatency** — FIRING — value: 0.935 (935ms p95 on /api/slow)
+- **AppDown** — inactive (app is healthy)
+
+![Both alerts in FIRING state](screenshots/12-prometheus-alerts-firing.png)
+
+---
+
+## Alert → Trace → Log Correlation
+
+This is the core validation of the lab. Three steps, three tools, one root cause.
+
+### Step 1: Alert → Exemplar → Trace (metric to trace)
+
+On the **Latency Percentiles** panel in Grafana, hover along the p95 line. Small diamond markers ◆ appear — each one is a real request whose `traceId` is stored as an exemplar inside the Prometheus histogram bucket.
+
+Click a diamond. A popup appears showing:
+
+```
+traceId    500af4cb4b9d16398974a5251d7b9dbf
+spanId     32b9056a07054aab
+Value      0.509452248  (509ms)
+route      /api/slow
+```
+
+Click **Query with Jaeger**. Grafana Explore opens and loads the exact trace.
+
+![Exemplar diamond popup with traceId and Query with Jaeger link](screenshots/14-grafana-exemplar-diamond-popup.png)
+
+### Step 2: Inside the trace (what ran and how long)
+
+The trace opened in Grafana Explore shows:
+
+```
+node-app: GET /api/slow    510ms total
+├── middleware - query          44μs
+├── middleware - expressInit   105μs
+├── middleware - jsonParser      44μs
+├── middleware - metricsMiddleware 31μs
+├── middleware - <anonymous>   383μs
+└── request handler - /api/slow  508ms  ← root cause
+```
+
+The `request handler - /api/slow` span took 508ms out of 510ms total. Root cause identified: the artificial `setTimeout` delay in the `/api/slow` route handler.
+
+![Grafana Explore showing Jaeger trace opened from exemplar click](screenshots/15-grafana-explore-jaeger-from-exemplar.png)
+
+### Step 3: Log → Trace (log line to trace)
+
+Copy the `trace_id` from a raw log line:
+
+```bash
+docker logs node-app --tail 20 | grep trace_id
+```
+
+Example output:
+
+```json
+{"level":"warn","message":"slow endpoint called",
+ "trace_id":"0ee896965f31c7a770f8884297acb570",
+ "span_id":"f89859316c6054d6","delay_ms":569}
+```
+
+In Grafana Explore → Jaeger datasource → TraceID tab → paste `0ee896965f31c7a770f8884297acb570` → Run query. The full trace loads directly inside Grafana.
+
+![Grafana Explore finding a trace by trace_id from logs](screenshots/16-grafana-explore-jaeger-from-log.png)
+
+---
+
+## Key Design Decisions
+
+**`tracing.js` required before `app.js`** — OTel auto-instrumentation works by monkey-patching Node's built-in `http` module. If Express loads `http` first (via its own require chain), OTel never intercepts it and produces zero traces. The single `require('./tracing')` at the top of `server.js` ensures OTel patches `http` before Express holds a reference to it.
+
+**OpenMetrics registry for exemplars** — prom-client enforces that exemplars only work with OpenMetrics-format registries (`setContentType(client.openMetricsContentType)`). The classic Prometheus text format has no exemplar syntax in its specification. The `--enable-feature=exemplar-storage` flag on Prometheus is also required — without it, Prometheus accepts the scrape but silently discards the exemplar data.
+
+**`observe()` single-object API for exemplars** — when `enableExemplars: true` is set on a histogram, prom-client switches to `observeWithExemplar()` which takes `{labels, value, exemplarLabels}` as a single object. Passing three positional arguments (the non-exemplar API) silently fails to attach the exemplar. This distinction is only visible in the prom-client source, not the README.
+
+**`exemplarTraceIdDestinations` in Grafana provisioning** — the `name` field must exactly match the key used in `exemplarLabels` (`traceId`). The `datasourceUid` must match the Jaeger datasource `uid` (`jaeger`). A mismatch in either means Grafana renders the diamond but the link does not open Jaeger.
+
+**Jaeger all-in-one image** — `jaegertracing/all-in-one:1.57` runs collector, query, and UI in a single container with in-memory storage. Traces are lost on container restart — this is intentional for local lab use. Production Jaeger uses separate components with Elasticsearch or Cassandra for persistence.
+
+**`COPY --chown` instead of `RUN chown -R`** — `RUN chown -R appuser:appgroup /app` on a `node_modules` directory with thousands of files creates an expensive Docker layer (70+ seconds on macOS). Using `COPY --from=builder --chown=appuser:appgroup` sets ownership during the copy itself with no extra filesystem traversal.
+
+**`for: 10m` alert duration** — the lab requires alerts that reflect sustained degradation, not momentary spikes. `for: 10m` means the condition must be continuously true for 10 uninterrupted minutes. The load test runs for 13 minutes to provide a 3-minute buffer above this threshold.
+
+**`/api/slow` and `/api/error` as temporary validation routes** — these routes exist only to generate the conditions needed to validate the observability stack. In production they would be removed. The lab requirement says to clean up test routes after validation.
+
+---
+
+## Teardown
+
+Stop and remove all containers and volumes:
+
+```bash
+docker compose down -v
+```
+
+The `-v` flag removes the named volumes (`prometheus-data`, `grafana-data`). Omit it if you want to keep the Prometheus metrics history and Grafana configuration between runs.
+
+Jaeger uses in-memory storage — all trace data is lost when the container stops regardless.
