@@ -491,6 +491,21 @@ In Grafana Explore → Jaeger datasource → TraceID tab → paste `0ee896965f31
 
 ---
 
+## Investigation Report
+
+A full 2-page investigation report documenting the alert → trace → log correlation workflow with evidence screenshots is available here:
+
+**[REPORT.md — Symptom → Trace → Root Cause](REPORT.md)**
+
+The report covers:
+- Both alerts that fired (HighLatency 935ms, HighErrorRate 39.6%)
+- How the Prometheus exemplar diamond linked the metric spike to a specific Jaeger trace
+- How the Jaeger waterfall identified the exact span (508ms out of 510ms total) as the root cause
+- How the `trace_id` from the trace was used to find the corresponding log lines
+- Root cause analysis and resolution for both issues
+
+---
+
 ## Teardown
 
 Stop and remove all containers and volumes:
