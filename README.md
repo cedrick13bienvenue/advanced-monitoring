@@ -214,3 +214,61 @@ Every log line is a JSON object containing `trace_id` and `span_id`:
 The same `trace_id` appears on every log line produced within a single request — this is the key to log-to-trace correlation.
 
 ![Structured JSON logs with trace_id and span_id](screenshots/03-structured-json-logs-trace-context.png)
+
+---
+
+## OpenTelemetry Instrumentation
+
+### How tracing.js works
+
+`tracing.js` must be the first `require()` in `server.js`. Node.js caches modules on first load — if Express loads the built-in `http` module before OTel patches it, auto-instrumentation never intercepts requests and you get zero traces.
+
+```js
+// server.js
+require('./tracing'); // ← must be first
+const app = require('./app');
+```
+
+`NodeSDK` starts the tracing engine. `getNodeAutoInstrumentations` patches Express, HTTP, DNS, and other built-ins automatically. The OTLP exporter pushes spans to Jaeger over HTTP every few seconds in batches. A `SIGTERM` handler flushes any in-flight spans before the container stops.
+
+### How logger.js injects trace context
+
+OTel stores the current span in Node's `AsyncLocalStorage` for the lifetime of each request. `logger.js` calls `trace.getActiveSpan()` on every log call — if a span is active, `traceId` and `spanId` are extracted and added to the JSON output.
+
+```js
+function getTraceContext() {
+  const span = trace.getActiveSpan();
+  if (!span) return {};
+  const ctx = span.spanContext();
+  return { trace_id: ctx.traceId, span_id: ctx.spanId };
+}
+```
+
+Outside of a request (e.g., startup logs), there is no active span and `trace_id` is absent — this is correct behaviour.
+
+### How metrics.js attaches exemplars
+
+prom-client 15.x supports exemplars only on **OpenMetrics registries** — the classic Prometheus text format has no exemplar syntax. The registry is switched with one line:
+
+```js
+register.setContentType(client.openMetricsContentType);
+```
+
+When exemplars are enabled, `observe()` takes a single object instead of positional arguments:
+
+```js
+httpRequestDuration.observe({
+  labels,
+  value: durationSec,
+  exemplarLabels: { traceId: spanCtx.traceId, spanId: spanCtx.spanId },
+});
+```
+
+Prometheus must be started with `--enable-feature=exemplar-storage` to store and expose exemplar data. Without this flag, exemplars are silently dropped even if the app sends them.
+
+```yaml
+# Raw /metrics output — exemplar embedded in histogram bucket line
+http_request_duration_seconds_bucket{le="0.5",...} 3 # {traceId="...",spanId="..."} 0.501
+```
+
+![Raw /metrics output showing exemplar traceId and spanId](screenshots/04-prometheus-metrics-exemplar.png)
