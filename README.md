@@ -6,13 +6,14 @@ This lab solves a problem that metrics and logs alone cannot: **when your app is
 
 Project 6 gave you metrics (numbers over time) and logs (text events). But when a latency spike hits at 2am, metrics tell you *that* something is broken, logs tell you *what happened*, but neither tells you *why* a specific request was slow. That gap is **distributed tracing**.
 
-This project extends the containerised Node.js/Express app with three new capabilities:
+This project extends the containerised Node.js/Express app with four new capabilities:
 
 - **OpenTelemetry SDK** instruments every HTTP request automatically — no manual span creation per route. Every inbound request gets a trace with child spans for each middleware layer, measuring exact timing per step.
 - **Jaeger** receives and stores those traces, giving you a searchable UI where you can find any request by service, operation, duration, or trace ID.
 - **Prometheus Exemplars** embed a `traceId` inside histogram metric samples. Grafana reads them and renders clickable diamond markers on the latency graph — click a spike, land on the exact Jaeger trace that caused it.
+- **Loki + Promtail** aggregates all container logs centrally. Promtail reads Docker's log socket, parses the JSON log lines, and ships them to Loki with `trace_id` as an indexed label. Grafana's `derivedFields` config turns every `trace_id` value in a Loki log line into a one-click link that opens the full Jaeger trace.
 
-The result is a three-way correlation: a Grafana alert fires → you click an exemplar diamond → Jaeger shows the exact slow span → you copy the `trace_id` → logs show every log line for that request. **Symptom to root cause in three clicks.**
+The result is a four-way correlation: a Grafana alert fires → click an exemplar diamond → Jaeger shows the exact slow span → click "View Trace in Jaeger" from the matching Loki log line. **Symptom to root cause in three clicks, entirely inside Grafana.**
 
 ---
 
@@ -23,8 +24,10 @@ The result is a three-way correlation: a Grafana alert fires → you click an ex
 - Inject `trace_id` and `span_id` into every structured JSON log line via `AsyncLocalStorage`
 - Enable Prometheus exemplars on the latency histogram — embed `traceId` and `spanId` in metric samples
 - Provision Jaeger datasource in Grafana and wire `exemplarTraceIdDestinations` to create metric→trace links
+- Add Loki + Promtail for centralised log aggregation — Promtail reads Docker's log socket and ships parsed JSON logs to Loki
+- Configure Grafana Loki datasource with `derivedFields` to render trace_id values as clickable Jaeger links
 - Tighten alert thresholds: p95 latency > 300ms and error rate > 5% both sustained for 10 minutes
-- Validate with a sustained load test: alert fires → exemplar clicked → trace found → log correlated
+- Validate with a sustained load test: alert fires → exemplar clicked → trace found → Loki log line → Jaeger trace in one click
 
 ---
 
@@ -41,6 +44,8 @@ The result is a three-way correlation: a Grafana alert fires → you click an ex
 | Prometheus | v2.51.0 |
 | Grafana | 10.4.0 |
 | Jaeger | 1.57 (all-in-one) |
+| Loki | 3.4.1 |
+| Promtail | 3.4.1 |
 | Node Exporter | v1.7.0 |
 | Docker Compose | v2 |
 | OS (local) | macOS |
@@ -70,16 +75,20 @@ YOUR MACHINE — Docker Compose
 │   ├── logger.js   ← reads active span via AsyncLocalStorage, injects trace_id/span_id
 │   ├── metrics.js  ← Histogram with enableExemplars, observes {traceId, spanId}
 │   └── app.js      ← Express routes with structured JSON logging on every request
-│         │
-│         │  OTLP HTTP  (spans pushed to Jaeger port 4318)
-│         ▼
-├── jaeger (ports 16686 UI / 4317 gRPC / 4318 HTTP)
-│   └── all-in-one: collector + query + UI + in-memory store
-│         │
-│         │  Jaeger datasource (uid: jaeger)
-│         ▼
-├── grafana (port 3001)
-│   ├── Prometheus datasource — exemplarTraceIdDestinations → jaeger uid
+│         │                          │
+│         │  OTLP HTTP               │  stdout JSON logs (Docker json-file driver)
+│         │  (spans → port 4318)     │
+│         ▼                          ▼
+├── jaeger (ports 16686 / 4317 / 4318)      ◄── promtail (reads /var/run/docker.sock)
+│   └── all-in-one: collector + query +              │
+│       UI + in-memory store                         │  POST /loki/api/v1/push
+│         │                                          ▼
+│         │  Jaeger datasource (uid: jaeger)   ├── loki (port 3100)
+│         ▼                          ▲               │  stores & indexes logs
+├── grafana (port 3001)              │               │  label: container, level, trace_id
+│   ├── Prometheus datasource        │               │
+│   │   exemplarTraceIdDestinations ─┘               │  Loki datasource + derivedFields
+│   ├── Loki datasource ─────────────────────────────┘  trace_id → "View Trace in Jaeger"
 │   └── Dashboard: RED metrics + Latency Exemplars + Jaeger traces panel
 │         ▲
 │         │  scrapes /metrics every 15s (exemplar-storage enabled)
@@ -95,8 +104,9 @@ Correlation flow:
   Grafana alert (metric spike)
     → click exemplar diamond ◆ on latency graph
     → Jaeger trace (exact request, all spans, per-step timing)
-    → copy trace_id → search docker logs
-    → log lines for that exact request
+    → Grafana Explore → Loki → {container="node-app"} | json
+    → expand log line → click "View Trace in Jaeger" button
+    → full trace opened from log, entirely inside Grafana
 ```
 
 ---
@@ -120,16 +130,20 @@ advanced-monitoring/
 ├── grafana/
 │   ├── provisioning/
 │   │   ├── datasources/
-│   │   │   └── datasources.yml  # Prometheus (with exemplarTraceIdDestinations) + Jaeger
+│   │   │   └── datasources.yml  # Prometheus + Jaeger + Loki (with derivedFields)
 │   │   └── dashboards/
 │   │       └── dashboard.yml    # File-based dashboard provisioner
 │   └── dashboards/
 │       └── app-dashboard.json   # RED metrics + exemplars panel + Jaeger traces panel
-├── docker-compose.yml    # 5 services: app, jaeger, prometheus, grafana, node-exporter
+├── loki/
+│   └── local-config.yaml # Loki single-process config — filesystem storage, inmemory ring
+├── promtail/
+│   └── promtail.yml      # Docker service discovery, JSON pipeline stages, ships to Loki
+├── docker-compose.yml    # 7 services: app, jaeger, prometheus, grafana, loki, promtail, node-exporter
 ├── load-test.sh          # 13-minute load generator — triggers both alert thresholds
 ├── .env.example          # Copy to .env before first run
 ├── .gitignore
-└── screenshots/          # 18 screenshots documenting the full validation workflow
+└── screenshots/          # 20 screenshots documenting the full validation workflow
 ```
 
 ---
@@ -139,7 +153,7 @@ advanced-monitoring/
 1. Docker Desktop installed and running
 2. Docker Compose v2
 3. `curl` and `python3` available in terminal (for validation commands)
-4. Ports free: 3000, 3001, 4317, 4318, 9090, 9100, 16686
+4. Ports free: 3000, 3001, 3100, 4317, 4318, 9090, 9100, 16686
 
 ---
 
@@ -167,13 +181,15 @@ docker compose up --build
 
 First run takes ~2 minutes — `npm install` downloads the OpenTelemetry packages (~80MB). Subsequent runs use the Docker layer cache and take under 10 seconds.
 
-Wait for all five services to report ready:
+Wait for all seven services to report ready:
 
 ```
 node-app      | {"level":"info","message":"server started","port":3000}
 jaeger        | "msg":"Starting HTTP server","port":16686
 prometheus    | msg="Server is ready to receive web requests."
 grafana       | msg="HTTP Server Listen" address=[::]:3000
+loki          | msg="Loki started"
+promtail      | msg="Starting Promtail"
 node-exporter | msg="Listening on" address=[::]:9100
 ```
 
@@ -449,25 +465,67 @@ The `request handler - /api/slow` span took 508ms out of 510ms total. Root cause
 
 ![Grafana Explore showing Jaeger trace opened from exemplar click](screenshots/15-grafana-explore-jaeger-from-exemplar.png)
 
-### Step 3: Log → Trace (log line to trace)
+### Step 3: Log → Trace (log line to trace via Loki)
 
-Copy the `trace_id` from a raw log line:
+In Grafana Explore → switch datasource to **Loki** → enter the LogQL query:
 
-```bash
-docker logs node-app --tail 20 | grep trace_id
+```
+{container="node-app"} | json
 ```
 
-Example output:
+Loki returns all log lines from the node-app container, parsed as JSON. Each line shows fields including `level`, `trace_id`, `span_id`, `message`, and `path`.
 
-```json
-{"level":"warn","message":"slow endpoint called",
- "trace_id":"0ee896965f31c7a770f8884297acb570",
- "span_id":"f89859316c6054d6","delay_ms":569}
+![Grafana Explore with Loki datasource, LogQL query, node-app log lines](screenshots/17-grafana-explore-loki-logs.png)
+
+Expanding any log line reveals all parsed JSON fields extracted by Promtail's pipeline stages:
+
+![Loki log line expanded showing parsed JSON fields including container, level, logstream](screenshots/18-grafana-loki-parsed-fields.png)
+
+Expand a `"slow endpoint called"` log line. At the bottom of the field list, under **Links**, the `TraceID` derived field appears with the value of `trace_id` extracted by regex — and a **"View Trace in Jaeger"** button next to it:
+
+![Loki log line with derivedFields showing View Trace in Jaeger button](screenshots/19-grafana-loki-derived-field-jaeger-link.png)
+
+Click **View Trace in Jaeger**. Grafana opens the full Jaeger trace in a split panel — no copy-paste, no tab switch, no manual trace ID entry:
+
+![Split view: Loki logs on left, Jaeger trace opened from log link on right](screenshots/20-grafana-loki-to-jaeger-trace-split.png)
+
+---
+
+## Loki Log Aggregation
+
+### How Promtail works
+
+Promtail mounts `/var/run/docker.sock` read-only so it can query the Docker API for running containers. `docker_sd_configs` discovers all containers automatically — no per-container configuration needed. When a new container starts, Promtail picks it up within the `refresh_interval` (5 seconds).
+
+For each container, Promtail tails the stdout/stderr log stream (the same data you see with `docker logs`). Each log line passes through `pipeline_stages`:
+
+1. **`json` stage** — parses the raw JSON string and extracts `level`, `trace_id`, and `span_id` as structured fields
+2. **`labels` stage** — promotes `level` and `trace_id` into Loki label dimensions, making them indexed and filterable
+
+The `relabel_configs` strip the leading `/` from `__meta_docker_container_name` so the `container` label reads `node-app` instead of `/node-app`.
+
+### How Loki stores logs
+
+Loki runs in single-process mode with filesystem storage. Unlike Elasticsearch, Loki does **not** full-text index log content — it indexes only the labels (container, level, trace_id). Log content is stored compressed in chunks. This makes ingest cheap but requires LogQL pipeline operators (`| json`, `| logfmt`) to parse fields at query time.
+
+The `schema_config` uses `tsdb` store with `v13` schema — the current recommended Loki 3.x configuration.
+
+### How `derivedFields` links logs to traces
+
+The Loki datasource in `grafana/provisioning/datasources/datasources.yml` includes:
+
+```yaml
+derivedFields:
+  - name: TraceID
+    matcherRegex: '"trace_id":"([a-f0-9]+)"'
+    url: '$${__value.raw}'
+    datasourceUid: jaeger
+    urlDisplayLabel: View Trace in Jaeger
 ```
 
-In Grafana Explore → Jaeger datasource → TraceID tab → paste `0ee896965f31c7a770f8884297acb570` → Run query. The full trace loads directly inside Grafana.
+When Grafana renders a log line whose raw text matches `"trace_id":"<hex value>"`, it extracts the hex value via the capture group and renders a **"View Trace in Jaeger"** button. The `url: '$${__value.raw}'` passes the extracted trace ID directly to the Jaeger datasource query. The `datasourceUid: jaeger` tells Grafana which datasource to open — the same `uid` defined on the Jaeger datasource entry.
 
-![Grafana Explore finding a trace by trace_id from logs](screenshots/16-grafana-explore-jaeger-from-log.png)
+This means any log line in Loki that contains a `trace_id` field automatically becomes a one-click entry point into the full distributed trace.
 
 ---
 
@@ -488,6 +546,12 @@ In Grafana Explore → Jaeger datasource → TraceID tab → paste `0ee896965f31
 **`for: 10m` alert duration** — the lab requires alerts that reflect sustained degradation, not momentary spikes. `for: 10m` means the condition must be continuously true for 10 uninterrupted minutes. The load test runs for 13 minutes to provide a 3-minute buffer above this threshold.
 
 **`/api/slow` and `/api/error` as temporary validation routes** — these routes exist only to generate the conditions needed to validate the observability stack. In production they would be removed. The lab requirement says to clean up test routes after validation.
+
+**Promtail `docker_sd_configs` instead of static file paths** — mounting Docker's Unix socket lets Promtail auto-discover all containers by label and metadata. A static `__path__` config would require a separate entry per container and would miss containers started after Promtail launches.
+
+**`derivedFields` regex targets raw log text, not parsed fields** — Grafana's `derivedFields` `matcherRegex` runs against the raw log line string, not the parsed field values. The pattern `"trace_id":"([a-f0-9]+)"` matches the JSON key-value pair as it appears in the raw JSON string, which is why the full quoted key is included in the regex rather than just the hex value.
+
+**Loki single-process mode for local labs** — Loki's production deployment separates ingester, querier, and compactor into independent services behind an nginx gateway. For a local lab, single-process mode (`-target=all` is implicit) runs all components in one container with filesystem storage. Traces and logs are lost on container restart — intentional for this environment.
 
 ---
 
@@ -514,6 +578,6 @@ Stop and remove all containers and volumes:
 docker compose down -v
 ```
 
-The `-v` flag removes the named volumes (`prometheus-data`, `grafana-data`). Omit it if you want to keep the Prometheus metrics history and Grafana configuration between runs.
+The `-v` flag removes the named volumes (`prometheus-data`, `grafana-data`, `loki-data`). Omit it if you want to keep the Prometheus metrics history, Grafana configuration, and Loki log index between runs.
 
 Jaeger uses in-memory storage — all trace data is lost when the container stops regardless.
