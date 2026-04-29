@@ -131,3 +131,86 @@ advanced-monitoring/
 ├── .gitignore
 └── screenshots/          # 18 screenshots documenting the full validation workflow
 ```
+
+---
+
+## Prerequisites
+
+1. Docker Desktop installed and running
+2. Docker Compose v2
+3. `curl` and `python3` available in terminal (for validation commands)
+4. Ports free: 3000, 3001, 4317, 4318, 9090, 9100, 16686
+
+---
+
+## Running the Stack
+
+### Step 1 — Environment setup
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and fill in all three values:
+
+```
+APP_VERSION=1.0.0
+GRAFANA_USER=admin
+GRAFANA_PASSWORD=yourpassword
+```
+
+### Step 2 — Build and start
+
+```bash
+docker compose up --build
+```
+
+First run takes ~2 minutes — `npm install` downloads the OpenTelemetry packages (~80MB). Subsequent runs use the Docker layer cache and take under 10 seconds.
+
+Wait for all five services to report ready:
+
+```
+node-app      | {"level":"info","message":"server started","port":3000}
+jaeger        | "msg":"Starting HTTP server","port":16686
+prometheus    | msg="Server is ready to receive web requests."
+grafana       | msg="HTTP Server Listen" address=[::]:3000
+node-exporter | msg="Listening on" address=[::]:9100
+```
+
+![docker compose up with node-app JSON logs](screenshots/01-docker-compose-up-node-app-logs.png)
+
+### Step 3 — Verify the app
+
+```bash
+# Slow route — returns after 300–600ms artificial delay
+curl -s http://localhost:3000/api/slow | python3 -m json.tool
+```
+
+Expected response:
+
+```json
+{
+    "message": "slow response",
+    "delay_ms": 501
+}
+```
+
+![/api/slow response showing delay_ms](screenshots/02-api-slow-response.png)
+
+### Step 4 — Verify structured logs with trace context
+
+```bash
+docker logs node-app --tail 20
+```
+
+Every log line is a JSON object containing `trace_id` and `span_id`:
+
+```json
+{"timestamp":"2026-04-29T05:41:03.500Z","level":"info","message":"incoming request",
+ "trace_id":"1711cc6b5787417a9150eda36b481d5b","span_id":"b6c92f547d430a60",
+ "method":"GET","path":"/api/items"}
+```
+
+The same `trace_id` appears on every log line produced within a single request — this is the key to log-to-trace correlation.
+
+![Structured JSON logs with trace_id and span_id](screenshots/03-structured-json-logs-trace-context.png)
