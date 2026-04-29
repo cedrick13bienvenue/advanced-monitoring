@@ -5,6 +5,7 @@ networks:
 volumes:
   prometheus-data:
   grafana-data:
+  loki-data:
 
 services:
 
@@ -95,6 +96,33 @@ services:
     depends_on:
       - prometheus
       - jaeger
+      - loki
+
+  loki:
+    image: grafana/loki:3.4.1
+    container_name: loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./loki:/etc/loki:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - monitoring
+
+  promtail:
+    image: grafana/promtail:3.4.1
+    container_name: promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./promtail:/etc/promtail:ro
+    networks:
+      - monitoring
+    depends_on:
+      - loki
 
   node-exporter:
     image: prom/node-exporter:v1.7.0
