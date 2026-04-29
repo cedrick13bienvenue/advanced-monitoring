@@ -272,3 +272,108 @@ http_request_duration_seconds_bucket{le="0.5",...} 3 # {traceId="...",spanId="..
 ```
 
 ![Raw /metrics output showing exemplar traceId and spanId](screenshots/04-prometheus-metrics-exemplar.png)
+
+---
+
+## Prometheus
+
+### Targets
+
+Open `http://localhost:9090/targets` — all three scrape jobs must show **UP**:
+
+| Job | Target | What it scrapes |
+|---|---|---|
+| node-app | app:3000/metrics | RED metrics + process metrics + exemplars |
+| node-exporter | node-exporter:9100/metrics | Host CPU, memory, disk, network |
+| prometheus | localhost:9090/metrics | Prometheus self-metrics |
+
+![Prometheus targets all UP](screenshots/05-prometheus-targets-up.png)
+
+### Alert Rules
+
+Three rules defined in `prometheus/alert_rules.yml`:
+
+| Alert | Condition | Duration | Severity |
+|---|---|---|---|
+| HighErrorRate | 5xx rate > 5% of total requests | 10 minutes | critical |
+| HighLatency | p95 latency > 300ms on any route | 10 minutes | warning |
+| AppDown | Prometheus cannot scrape node-app | 1 minute | critical |
+
+The `for: 10m` clause means the condition must be **continuously true for 10 minutes** before the alert fires. A single 5xx response does not trigger it — sustained degradation does.
+
+![Prometheus alert rules loaded and pending](screenshots/06-prometheus-alert-rules-pending.png)
+
+---
+
+## Jaeger Distributed Tracing
+
+Jaeger UI is at `http://localhost:16686`. The app sends traces via OTLP HTTP to `http://jaeger:4318/v1/traces`.
+
+### Viewing traces
+
+1. Select **node-app** from the Service dropdown
+2. Click **Find Traces**
+3. The trace list shows one entry per request — `GET /api/slow` traces show 300–600ms, `GET /api/items` traces show ~5ms
+
+![Jaeger UI with node-app service selected](screenshots/07-jaeger-node-app-service.png)
+
+![Jaeger trace list showing /api/slow durations vs /api/items](screenshots/08-jaeger-trace-list.png)
+
+### Reading a trace
+
+Click any `/api/slow` trace. The waterfall shows 7 spans — the root HTTP span and one span per Express middleware layer:
+
+```
+GET /api/slow                    510ms  (root span — full request duration)
+├── middleware - query            44μs
+├── middleware - expressInit     105μs
+├── middleware - jsonParser       44μs
+├── middleware - metricsMiddleware 31μs
+├── middleware - <anonymous>     383μs
+└── request handler - /api/slow  508ms  ← where the time was spent
+```
+
+The `request handler - /api/slow` span consuming 508ms of 510ms total is the root cause. In a real system this would be a slow DB query or external API call, not an artificial sleep.
+
+![Individual trace waterfall with 7 spans](screenshots/09-jaeger-trace-waterfall.png)
+
+### Span detail
+
+Click the root span. The right panel shows HTTP semantic attributes captured automatically by OTel auto-instrumentation — no manual tagging required:
+
+```
+http.method       GET
+http.route        /api/slow
+http.status_code  200
+http.flavor       1.1
+net.host.name     localhost
+deployment.environment  production
+otel.library.name @opentelemetry/instrumentation-http
+```
+
+![Span detail showing HTTP tags and OTel attributes](screenshots/10-jaeger-span-detail-http-tags.png)
+
+---
+
+## Grafana Dashboard
+
+Open `http://localhost:3001` and log in with the credentials from your `.env` file.
+
+The dashboard auto-loads with four sections:
+
+**Traffic Overview** — four stat panels showing live values:
+- Requests/sec — current request rate
+- Error Rate — percentage of 5xx responses (red above 5%)
+- p95 Latency — 95th percentile latency in milliseconds (red above 300ms)
+- App Uptime — seconds since process start
+
+**Request Metrics** — time series showing request rate per route and error rate per route over time.
+
+**Latency + Exemplars** — the p50/p95/p99 latency panel with exemplar diamonds enabled. Each diamond ◆ on the p95 line is a real request whose `traceId` is embedded in the metric sample.
+
+**Distributed Tracing (Jaeger)** — a native Jaeger traces panel that searches the `node-app` service directly inside Grafana without leaving the dashboard.
+
+**System Resources** — CPU usage and memory usage from node-exporter.
+
+![Grafana dashboard live with error rate and latency panels](screenshots/13-grafana-dashboard-live.png)
+![Grafana latency section with live percentile data](screenshots/13b-grafana-dashboard-latency-section.png)
