@@ -531,27 +531,13 @@ This means any log line in Loki that contains a `trace_id` field automatically b
 
 ## Key Design Decisions
 
-**`tracing.js` required before `app.js`** — OTel auto-instrumentation works by monkey-patching Node's built-in `http` module. If Express loads `http` first (via its own require chain), OTel never intercepts it and produces zero traces. The single `require('./tracing')` at the top of `server.js` ensures OTel patches `http` before Express holds a reference to it.
+**`tracing.js` required before `app.js`** — OTel patches Node's built-in `http` module at load time. If Express loads `http` first, OTel never intercepts it and produces zero traces with no error. The `require('./tracing')` at the top of `server.js` must come before anything else.
 
-**OpenMetrics registry for exemplars** — prom-client enforces that exemplars only work with OpenMetrics-format registries (`setContentType(client.openMetricsContentType)`). The classic Prometheus text format has no exemplar syntax in its specification. The `--enable-feature=exemplar-storage` flag on Prometheus is also required — without it, Prometheus accepts the scrape but silently discards the exemplar data.
+**Exemplars require two things to work** — prom-client only attaches exemplars on OpenMetrics registries (`register.setContentType(client.openMetricsContentType)`), and `observe()` with `enableExemplars: true` takes a single `{labels, value, exemplarLabels}` object, not three positional arguments. Either mistake causes exemplars to silently not appear. Prometheus also needs `--enable-feature=exemplar-storage` or it accepts the scrape but discards the data.
 
-**`observe()` single-object API for exemplars** — when `enableExemplars: true` is set on a histogram, prom-client switches to `observeWithExemplar()` which takes `{labels, value, exemplarLabels}` as a single object. Passing three positional arguments (the non-exemplar API) silently fails to attach the exemplar. This distinction is only visible in the prom-client source, not the README.
+**`COPY --chown` instead of `RUN chown -R`** — `RUN chown -R appuser:appgroup /app` traverses every file in `node_modules` at build time, creating a Docker layer that took 70+ seconds on macOS. `COPY --from=builder --chown=appuser:appgroup` sets ownership during the copy with no extra traversal.
 
-**`exemplarTraceIdDestinations` in Grafana provisioning** — the `name` field must exactly match the key used in `exemplarLabels` (`traceId`). The `datasourceUid` must match the Jaeger datasource `uid` (`jaeger`). A mismatch in either means Grafana renders the diamond but the link does not open Jaeger.
-
-**Jaeger all-in-one image** — `jaegertracing/all-in-one:1.57` runs collector, query, and UI in a single container with in-memory storage. Traces are lost on container restart — this is intentional for local lab use. Production Jaeger uses separate components with Elasticsearch or Cassandra for persistence.
-
-**`COPY --chown` instead of `RUN chown -R`** — `RUN chown -R appuser:appgroup /app` on a `node_modules` directory with thousands of files creates an expensive Docker layer (70+ seconds on macOS). Using `COPY --from=builder --chown=appuser:appgroup` sets ownership during the copy itself with no extra filesystem traversal.
-
-**`for: 10m` alert duration** — the lab requires alerts that reflect sustained degradation, not momentary spikes. `for: 10m` means the condition must be continuously true for 10 uninterrupted minutes. The load test runs for 13 minutes to provide a 3-minute buffer above this threshold.
-
-**`/api/slow` and `/api/error` as temporary validation routes** — these routes exist only to generate the conditions needed to validate the observability stack. In production they would be removed. The lab requirement says to clean up test routes after validation.
-
-**Promtail `docker_sd_configs` instead of static file paths** — mounting Docker's Unix socket lets Promtail auto-discover all containers by label and metadata. A static `__path__` config would require a separate entry per container and would miss containers started after Promtail launches.
-
-**`derivedFields` regex targets raw log text, not parsed fields** — Grafana's `derivedFields` `matcherRegex` runs against the raw log line string, not the parsed field values. The pattern `"trace_id":"([a-f0-9]+)"` matches the JSON key-value pair as it appears in the raw JSON string, which is why the full quoted key is included in the regex rather than just the hex value.
-
-**Loki single-process mode for local labs** — Loki's production deployment separates ingester, querier, and compactor into independent services behind an nginx gateway. For a local lab, single-process mode (`-target=all` is implicit) runs all components in one container with filesystem storage. Traces and logs are lost on container restart — intentional for this environment.
+**`derivedFields` regex matches the raw log string, not parsed fields** — `matcherRegex` runs against the unparsed log line. The pattern `"trace_id":"([a-f0-9]+)"` must include the JSON key syntax because Grafana hasn't parsed the JSON yet at match time — matching just `([a-f0-9]+)` would catch every hex string in the line.
 
 ---
 
