@@ -79,7 +79,7 @@ YOUR MACHINE — Docker Compose
 │         │  OTLP HTTP               │  stdout JSON logs (Docker json-file driver)
 │         │  (spans → port 4318)     │
 │         ▼                          ▼
-├── jaeger (ports 16686 / 4317 / 4318)      ◄── promtail (reads /var/run/docker.sock)
+├── jaeger (ports 16686 / 4318)             ◄── alloy   (reads /var/run/docker.sock)
 │   └── all-in-one: collector + query +              │
 │       UI + in-memory store                         │  POST /loki/api/v1/push
 │         │                                          ▼
@@ -137,9 +137,9 @@ advanced-monitoring/
 │       └── app-dashboard.json   # RED metrics + exemplars panel + Jaeger traces panel
 ├── loki/
 │   └── local-config.yaml # Loki single-process config — filesystem storage, inmemory ring
-├── promtail/
-│   └── promtail.yml      # Docker service discovery, JSON pipeline stages, ships to Loki
-├── docker-compose.yml    # 7 services: app, jaeger, prometheus, grafana, loki, promtail, node-exporter
+├── alloy/
+│   └── config.alloy      # Alloy pipeline — docker discovery, relabel, JSON stages, loki.write
+├── docker-compose.yml    # 7 services: app, jaeger, prometheus, grafana, loki, alloy, node-exporter
 ├── load-test.sh          # 13-minute load generator — triggers both alert thresholds
 ├── .env.example          # Copy to .env before first run
 ├── .gitignore
