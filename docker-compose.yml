@@ -6,6 +6,7 @@ volumes:
   prometheus-data:
   grafana-data:
   loki-data:
+  alloy-data:
 
 services:
 
@@ -109,6 +110,26 @@ services:
       - "3100:3100"
     networks:
       - monitoring
+
+  alloy:
+    image: grafana/alloy:latest
+    container_name: alloy
+    restart: unless-stopped
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./alloy:/etc/alloy:ro
+      - alloy-data:/var/lib/alloy/data
+    ports:
+      - "12345:12345"
+    networks:
+      - monitoring
+    depends_on:
+      - loki
 
   node-exporter:
     image: prom/node-exporter:v1.7.0
