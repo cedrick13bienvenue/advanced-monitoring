@@ -35,4 +35,11 @@ loki.process "json_pipeline" {
       span_id  = "span_id",
     }
   }
+
+  stage.labels {
+    values = {
+      level    = "level",
+      trace_id = "trace_id",
+    }
+  }
 }
