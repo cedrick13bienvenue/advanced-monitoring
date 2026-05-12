@@ -544,6 +544,8 @@ This means any log line in Loki that contains a `trace_id` field automatically b
 
 **`derivedFields` regex matches the raw log string, not parsed fields** — `matcherRegex` runs against the unparsed log line. The pattern `"trace_id":"([a-f0-9]+)"` must include the JSON key syntax because Grafana hasn't parsed the JSON yet at match time — matching just `([a-f0-9]+)` would catch every hex string in the line.
 
+**Grafana Alloy instead of Promtail** — Promtail reached end-of-life in March 2026. Alloy is its official successor. The config format changes from YAML (`promtail.yml`) to River (`.alloy`) — components are named blocks that wire to each other by referencing exported receivers like `loki.process.json_pipeline.receiver`. The functionality is identical: Docker socket discovery, JSON pipeline stages, Loki push.
+
 ---
 
 ## Investigation Report
