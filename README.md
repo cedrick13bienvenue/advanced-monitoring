@@ -189,7 +189,7 @@ jaeger        | "msg":"Starting HTTP server","port":16686
 prometheus    | msg="Server is ready to receive web requests."
 grafana       | msg="HTTP Server Listen" address=[::]:3000
 loki          | msg="Loki started"
-promtail      | msg="Starting Promtail"
+alloy         | msg="running Alloy"
 node-exporter | msg="Listening on" address=[::]:9100
 ```
 
@@ -493,16 +493,21 @@ Click **View Trace in Jaeger**. Grafana opens the full Jaeger trace in a split p
 
 ## Loki Log Aggregation
 
-### How Promtail works
+### How Alloy works
 
-Promtail mounts `/var/run/docker.sock` read-only so it can query the Docker API for running containers. `docker_sd_configs` discovers all containers automatically — no per-container configuration needed. When a new container starts, Promtail picks it up within the `refresh_interval` (5 seconds).
+Alloy is Grafana's OpenTelemetry Collector-based agent and the official successor to Promtail (EOL March 2026). It uses a pipeline config format (`.alloy` files) where named components wire together via their exported receivers and outputs.
 
-For each container, Promtail tails the stdout/stderr log stream (the same data you see with `docker logs`). Each log line passes through `pipeline_stages`:
+`alloy/config.alloy` builds the pipeline in four components:
 
-1. **`json` stage** — parses the raw JSON string and extracts `level`, `trace_id`, and `span_id` as structured fields
-2. **`labels` stage** — promotes `level` and `trace_id` into Loki label dimensions, making them indexed and filterable
+**`discovery.docker`** — mounts `/var/run/docker.sock` read-only and queries the Docker API every 5 seconds to find all running containers. Each container becomes a target with metadata labels like `__meta_docker_container_name`.
 
-The `relabel_configs` strip the leading `/` from `__meta_docker_container_name` so the `container` label reads `node-app` instead of `/node-app`.
+**`discovery.relabel`** — cleans up that metadata. The `__meta_docker_container_name` label comes as `/node-app` (Docker always prefixes with a slash). A regex rule strips the slash so the final `container` label reads `node-app`. The `logstream` label captures whether the line came from stdout or stderr.
+
+**`loki.source.docker`** — the actual log reader. It receives the relabeled targets, tails each container's stdout/stderr via the Docker socket, and forwards each log line to `loki.process.json_pipeline`. It also persists read positions so it doesn't re-send logs on restart.
+
+**`loki.process`** — runs each log line through two sequential stages:
+1. `stage.json` — parses the raw JSON string and extracts `level`, `trace_id`, and `span_id` into the pipeline's extracted values map
+2. `stage.labels` — promotes `level` and `trace_id` into actual Loki labels (indexed dimensions). `span_id` stays in the raw log content — it's high-cardinality and not needed for filtering, only for reading.
 
 ### How Loki stores logs
 
