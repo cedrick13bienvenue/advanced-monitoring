@@ -24,3 +24,15 @@ loki.source.docker "default" {
   relabel_rules = discovery.relabel.containers
   forward_to    = [loki.process.json_pipeline.receiver]
 }
+
+loki.process "json_pipeline" {
+  forward_to = [loki.write.default.receiver]
+
+  stage.json {
+    expressions = {
+      level    = "level",
+      trace_id = "trace_id",
+      span_id  = "span_id",
+    }
+  }
+}
