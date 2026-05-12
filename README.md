@@ -11,7 +11,7 @@ This project extends the containerised Node.js/Express app with four new capabil
 - **OpenTelemetry SDK** instruments every HTTP request automatically — no manual span creation per route. Every inbound request gets a trace with child spans for each middleware layer, measuring exact timing per step.
 - **Jaeger** receives and stores those traces, giving you a searchable UI where you can find any request by service, operation, duration, or trace ID.
 - **Prometheus Exemplars** embed a `traceId` inside histogram metric samples. Grafana reads them and renders clickable diamond markers on the latency graph — click a spike, land on the exact Jaeger trace that caused it.
-- **Loki + Promtail** aggregates all container logs centrally. Promtail reads Docker's log socket, parses the JSON log lines, and ships them to Loki with `trace_id` as an indexed label. Grafana's `derivedFields` config turns every `trace_id` value in a Loki log line into a one-click link that opens the full Jaeger trace.
+- **Loki + Grafana Alloy** aggregates all container logs centrally. Alloy reads Docker's log socket, parses the JSON log lines, and ships them to Loki with `trace_id` as an indexed label. Grafana's `derivedFields` config turns every `trace_id` value in a Loki log line into a one-click link that opens the full Jaeger trace.
 
 The result is a four-way correlation: a Grafana alert fires → click an exemplar diamond → Jaeger shows the exact slow span → click "View Trace in Jaeger" from the matching Loki log line. **Symptom to root cause in three clicks, entirely inside Grafana.**
 
@@ -24,7 +24,7 @@ The result is a four-way correlation: a Grafana alert fires → click an exempla
 - Inject `trace_id` and `span_id` into every structured JSON log line via `AsyncLocalStorage`
 - Enable Prometheus exemplars on the latency histogram — embed `traceId` and `spanId` in metric samples
 - Provision Jaeger datasource in Grafana and wire `exemplarTraceIdDestinations` to create metric→trace links
-- Add Loki + Promtail for centralised log aggregation — Promtail reads Docker's log socket and ships parsed JSON logs to Loki
+- Add Loki + Grafana Alloy for centralised log aggregation — Alloy reads Docker's log socket and ships parsed JSON logs to Loki
 - Configure Grafana Loki datasource with `derivedFields` to render trace_id values as clickable Jaeger links
 - Tighten alert thresholds: p95 latency > 300ms and error rate > 5% both sustained for 10 minutes
 - Validate with a sustained load test: alert fires → exemplar clicked → trace found → Loki log line → Jaeger trace in one click
@@ -45,7 +45,7 @@ The result is a four-way correlation: a Grafana alert fires → click an exempla
 | Grafana | 10.4.0 |
 | Jaeger | 1.57 (all-in-one) |
 | Loki | 3.4.1 |
-| Promtail | 3.4.1 |
+| Grafana Alloy | latest |
 | Node Exporter | v1.7.0 |
 | Docker Compose | v2 |
 | OS (local) | macOS |
@@ -153,7 +153,7 @@ advanced-monitoring/
 1. Docker Desktop installed and running
 2. Docker Compose v2
 3. `curl` and `python3` available in terminal (for validation commands)
-4. Ports free: 3000, 3001, 3100, 4317, 4318, 9090, 9100, 16686
+4. Ports free: 3000, 3001, 3100, 4318, 9090, 9100, 12345, 16686
 
 ---
 
